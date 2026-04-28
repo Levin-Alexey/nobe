@@ -1,17 +1,20 @@
 import asyncio
 import os
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import FSInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from db import get_db_pool
+from models import get_db_pool
 from ai_logic import process_user_message
 from excel_export import generate_order_excel
 
+load_dotenv()
+
 # --- Настройки ---
-BOT_TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))

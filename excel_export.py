@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
-from db import get_products_by_ids
+from models import get_products_by_ids
 
 async def generate_order_excel(db_pool, items_data: list) -> str:
     """

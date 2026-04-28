@@ -1,8 +1,35 @@
 import asyncpg
+import os
+from urllib.parse import quote_plus
+from dotenv import load_dotenv
 from pgvector.asyncpg import register_vector
 
-# Конфиг БД (потом вынесешь в .env)
-DB_DSN = "postgres://botuser:botpass@localhost:5432/nobe_db"
+load_dotenv()
+
+
+def _build_db_dsn_from_env() -> str:
+    """Строит DSN из переменных окружения, если DB_DSN не задан."""
+    host = os.getenv("DB_HOST")
+    port = os.getenv("DB_PORT", "5432")
+    db_name = os.getenv("DB_NAME")
+    db_user = os.getenv("DB_USER")
+    db_password = os.getenv("DB_PASSWORD")
+
+    required = {
+        "DB_HOST": host,
+        "DB_NAME": db_name,
+        "DB_USER": db_user,
+        "DB_PASSWORD": db_password,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(f"Не заданы обязательные переменные окружения для БД: {', '.join(missing)}")
+
+    return f"postgres://{db_user}:{quote_plus(db_password)}@{host}:{port}/{db_name}"
+
+
+# Сначала пробуем готовый DSN, иначе собираем его из DB_* переменных
+DB_DSN = os.getenv("DB_DSN") or _build_db_dsn_from_env()
 
 async def get_db_pool():
     """Создает пул соединений с базой данных и регистрирует тип vector"""

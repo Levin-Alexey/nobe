@@ -1,14 +1,22 @@
 import json
+import os
 from openai import AsyncOpenAI
-from db import search_products_by_vector
+from dotenv import load_dotenv
+from models import search_products_by_vector
+
+load_dotenv()
 
 # Конфиг (лучше вынести в .env)
-OPENROUTER_API_KEY = "ТВОЙ_КЛЮЧ_OPENROUTER"
-MODEL = "openai/gpt-4o-mini" # Или anthropic/claude-3.5-sonnet, смотря что предпочитаешь
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_TOKEN", "")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")  # Можно переопределить через .env
+
+if not OPENROUTER_API_KEY:
+    raise RuntimeError("Не задан OPENROUTER_API_KEY (или OPENROUTER_TOKEN) в .env")
 
 # Инициализируем асинхронный клиент
 client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
+    base_url=OPENROUTER_BASE_URL,
     api_key=OPENROUTER_API_KEY,
 )
 
