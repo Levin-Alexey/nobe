@@ -1,6 +1,7 @@
 import json
 import os
 from openai import AsyncOpenAI
+from openai import BadRequestError
 from dotenv import load_dotenv
 from models import search_products_by_vector
 
@@ -10,6 +11,7 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_TOKEN", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")  # Можно переопределить через .env
+EMBEDDING_MODEL = os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small")
 
 if not OPENROUTER_API_KEY:
     raise RuntimeError("Не задан OPENROUTER_API_KEY (или OPENROUTER_TOKEN) в .env")
@@ -100,11 +102,18 @@ def assistant_message_to_dict(message) -> dict:
 
 async def get_embedding(text: str) -> list:
     """Асинхронное получение вектора для текста"""
-    response = await client.embeddings.create(
-        input=text,
-        model="text-embedding-3-small"
-    )
-    return response.data[0].embedding
+    try:
+        response = await client.embeddings.create(
+            input=text,
+            model=EMBEDDING_MODEL,
+            encoding_format="float",
+        )
+        return response.data[0].embedding
+    except BadRequestError as e:
+        print(f"Embedding 400 BadRequest: {e}")
+        if getattr(e, "response", None) is not None:
+            print(f"Embedding provider response: {e.response.text}")
+        raise
 
 
 async def process_user_message(
@@ -122,12 +131,18 @@ async def process_user_message(
     message_history.append({"role": "user", "content": user_message})
 
     # Отправляем запрос в LLM
-    response = await client.chat.completions.create(
-        model=MODEL,
-        messages=message_history,
-        tools=TOOLS,
-        tool_choice="auto"
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=MODEL,
+            messages=message_history,
+            tools=TOOLS,
+            tool_choice="auto"
+        )
+    except BadRequestError as e:
+        print(f"Chat 400 BadRequest: {e}")
+        if getattr(e, "response", None) is not None:
+            print(f"Chat provider response: {e.response.text}")
+        raise
 
     response_message = response.choices[0].message
     message_history.append(assistant_message_to_dict(response_message))
@@ -155,10 +170,16 @@ async def process_user_message(
                 })
 
                 # 4. Просим LLM переварить данные из базы и ответить юзеру
-                second_response = await client.chat.completions.create(
-                    model=MODEL,
-                    messages=message_history
-                )
+                try:
+                    second_response = await client.chat.completions.create(
+                        model=MODEL,
+                        messages=message_history
+                    )
+                except BadRequestError as e:
+                    print(f"Second chat 400 BadRequest: {e}")
+                    if getattr(e, "response", None) is not None:
+                        print(f"Second chat provider response: {e.response.text}")
+                    raise
                 final_msg = second_response.choices[0].message
                 message_history.append(assistant_message_to_dict(final_msg))
                 return {
