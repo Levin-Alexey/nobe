@@ -78,9 +78,25 @@ SYSTEM_PROMPT = """Ты — умный менеджер по продажам э
 РАМ - рамка
 ЦВЕТ - цвет (например: белый, черный, серый)
 ТИП - тип (например: сенсорный, с подсветкой, с usb)
-Перекл - переключатель 
+Перекл - переключатель
 Звонк - звонок,механизм звонкового выклюателя
 """
+
+
+def assistant_message_to_dict(message) -> dict:
+    """Готовит assistant-сообщение для безопасного повторного запроса."""
+    payload = {
+        "role": message.role,
+        "content": message.content or "",
+    }
+
+    if message.tool_calls:
+        payload["tool_calls"] = [
+            tool_call.model_dump() for tool_call in message.tool_calls
+        ]
+
+    return payload
+
 
 async def get_embedding(text: str) -> list:
     """Асинхронное получение вектора для текста"""
@@ -90,7 +106,10 @@ async def get_embedding(text: str) -> list:
     )
     return response.data[0].embedding
 
-async def process_user_message(user_id: int, user_message: str, message_history: list, db_pool) -> dict:
+
+async def process_user_message(
+    user_id: int, user_message: str, message_history: list, db_pool
+) -> dict:
     """
     Основная логика общения.
     message_history - список предыдущих сообщений [{"role": "user", "content": "..."}, ...]
@@ -99,7 +118,7 @@ async def process_user_message(user_id: int, user_message: str, message_history:
     # Добавляем системный промпт, если история пустая
     if not message_history:
         message_history.append({"role": "system", "content": SYSTEM_PROMPT})
-        
+
     message_history.append({"role": "user", "content": user_message})
 
     # Отправляем запрос в LLM
@@ -111,7 +130,7 @@ async def process_user_message(user_id: int, user_message: str, message_history:
     )
 
     response_message = response.choices[0].message
-    message_history.append(response_message)
+    message_history.append(assistant_message_to_dict(response_message))
 
     # Если ИИ решил вызвать функцию (Tool Calling)
     if response_message.tool_calls:
@@ -123,8 +142,10 @@ async def process_user_message(user_id: int, user_message: str, message_history:
                 # 1. Получаем вектор из запроса
                 query_vector = await get_embedding(function_args["search_query"])
                 # 2. Ищем в нашей векторной БД
-                db_results = await search_products_by_vector(db_pool, query_vector, limit=5)
-                
+                db_results = await search_products_by_vector(
+                    db_pool, query_vector, limit=5
+                )
+
                 # 3. Отправляем результат обратно в LLM
                 message_history.append({
                     "role": "tool",
@@ -132,26 +153,34 @@ async def process_user_message(user_id: int, user_message: str, message_history:
                     "name": function_name,
                     "content": json.dumps(db_results, ensure_ascii=False)
                 })
-                
+
                 # 4. Просим LLM переварить данные из базы и ответить юзеру
                 second_response = await client.chat.completions.create(
                     model=MODEL,
                     messages=message_history
                 )
                 final_msg = second_response.choices[0].message
-                message_history.append(final_msg)
-                return {"type": "text", "content": final_msg.content, "history": message_history}
+                message_history.append(assistant_message_to_dict(final_msg))
+                return {
+                    "type": "text",
+                    "content": final_msg.content or "",
+                    "history": message_history,
+                }
 
             elif function_name == "create_excel_order":
                 # ИИ решил, что пора формировать заказ!
                 # Мы не отправляем это обратно в ИИ, мы отдаем команду нашему Telegram-боту
                 items_to_order = function_args["items"]
                 return {
-                    "type": "excel_order", 
-                    "items": items_to_order, 
+                    "type": "excel_order",
+                    "items": items_to_order,
                     "history": message_history,
                     "content": "Секунду, формирую файл сметы..."
                 }
 
     # Если ИИ ответил просто текстом (без вызова функций)
-    return {"type": "text", "content": response_message.content, "history": message_history}
+    return {
+        "type": "text",
+        "content": response_message.content or "",
+        "history": message_history,
+    }
