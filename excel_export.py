@@ -1,4 +1,5 @@
 import os
+import tempfile
 import uuid
 from datetime import datetime
 import openpyxl
@@ -88,7 +89,7 @@ async def generate_order_excel(db_pool, user_id: int) -> str:
 
     # 6. Сохраняем во временный файл
     # Создаем директорию tmp, если ее вдруг нет
-    tmp_dir = "/tmp/nobe_bot_orders"
+    tmp_dir = os.path.join(tempfile.gettempdir(), "nobe_bot_orders")
     os.makedirs(tmp_dir, exist_ok=True)
     
     # Генерируем уникальное имя файла, чтобы избежать конфликтов при одновременных заказах

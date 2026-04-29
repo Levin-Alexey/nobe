@@ -4,7 +4,12 @@ import re
 from openai import AsyncOpenAI
 from openai import BadRequestError
 from dotenv import load_dotenv
-from models import add_or_update_cart_item, search_products_by_vector
+from models import (
+    add_or_update_cart_item,
+    get_cart_items,
+    remove_cart_item,
+    search_products_by_vector,
+)
 
 load_dotenv()
 
@@ -70,6 +75,34 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "show_cart",
+            "description": "Показать текущую корзину пользователя с товарами и количеством.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_from_cart",
+            "description": "Удаляет одну позицию из корзины по ID товара.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {
+                        "type": "integer",
+                        "description": "ID товара для удаления из корзины"
+                    }
+                },
+                "required": ["product_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_excel_order",
             "description": "Сформировать итоговое коммерческое предложение в Excel по текущей корзине пользователя.",
             "parameters": {
@@ -87,7 +120,9 @@ SYSTEM_PROMPT = """Ты — умный менеджер по продажам э
 2. Если клиент выбрал позицию и количество (например: "добавь 3 шт"), вызывай функцию add_to_cart.
 3. Если клиент просит оформить/посчитать/прислать КП по тому, что уже добавлял ранее, вызывай функцию create_excel_order без параметров.
 4. Корзина накапливается между сообщениями пользователя: добавляй позиции по мере диалога.
-3. Общайся вежливо, по-деловому, но кратко.
+5. Если пользователь просит показать корзину, вызывай функцию show_cart.
+6. Если пользователь просит удалить товар из корзины, вызывай функцию remove_from_cart.
+7. Общайся вежливо, по-деловому, но кратко.
 Сокращения которые может написать пользователь:
 ВЫКЛ - выключатель
 РОЗ - розетка
@@ -253,6 +288,79 @@ async def process_user_message(
                         {
                             "status": "ok",
                             "added_items": added_items,
+                        },
+                        ensure_ascii=False,
+                    )
+                })
+
+                try:
+                    second_response = await client.chat.completions.create(
+                        model=MODEL,
+                        messages=message_history
+                    )
+                except BadRequestError as e:
+                    print(f"Second chat 400 BadRequest: {e}")
+                    if getattr(e, "response", None) is not None:
+                        print(f"Second chat provider response: {e.response.text}")
+                    raise
+
+                final_msg = second_response.choices[0].message
+                message_history.append(assistant_message_to_dict(final_msg))
+                return {
+                    "type": "text",
+                    "content": format_clickable_links(final_msg.content or ""),
+                    "history": message_history,
+                }
+
+            elif function_name == "show_cart":
+                cart_items = await get_cart_items(db_pool, user_id)
+                message_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": function_name,
+                    "content": json.dumps(
+                        {
+                            "status": "ok",
+                            "items": cart_items,
+                            "items_count": len(cart_items),
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                })
+
+                try:
+                    second_response = await client.chat.completions.create(
+                        model=MODEL,
+                        messages=message_history
+                    )
+                except BadRequestError as e:
+                    print(f"Second chat 400 BadRequest: {e}")
+                    if getattr(e, "response", None) is not None:
+                        print(f"Second chat provider response: {e.response.text}")
+                    raise
+
+                final_msg = second_response.choices[0].message
+                message_history.append(assistant_message_to_dict(final_msg))
+                return {
+                    "type": "text",
+                    "content": format_clickable_links(final_msg.content or ""),
+                    "history": message_history,
+                }
+
+            elif function_name == "remove_from_cart":
+                product_id = int(function_args["product_id"])
+                db_result = await remove_cart_item(db_pool, user_id, product_id)
+
+                message_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": function_name,
+                    "content": json.dumps(
+                        {
+                            "status": "ok",
+                            "product_id": product_id,
+                            "db_result": db_result,
                         },
                         ensure_ascii=False,
                     )
