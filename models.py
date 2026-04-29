@@ -25,7 +25,16 @@ def _build_db_dsn_from_env() -> str:
     if missing:
         raise RuntimeError(f"Не заданы обязательные переменные окружения для БД: {', '.join(missing)}")
 
-    return f"postgres://{db_user}:{quote_plus(db_password)}@{host}:{port}/{db_name}"
+    # После проверки missing эти значения гарантированно не None.
+    safe_user = str(db_user)
+    safe_password = str(db_password)
+    safe_host = str(host)
+    safe_db_name = str(db_name)
+
+    return (
+        f"postgres://{safe_user}:{quote_plus(safe_password)}"
+        f"@{safe_host}:{port}/{safe_db_name}"
+    )
 
 
 # Сначала пробуем готовый DSN, иначе собираем его из DB_* переменных
@@ -76,3 +85,93 @@ async def search_products_by_vector(pool: asyncpg.Pool, query_embedding: list, l
             "pdf_url": r["pdf_url"]           # Добавили
         })
     return results
+
+
+async def add_or_update_cart_item(
+    pool: asyncpg.Pool, user_id: int, product_id: int, quantity: int
+):
+    """Добавляет товар в корзину или увеличивает его количество."""
+    query = """
+        INSERT INTO cart_items (user_id, product_id, quantity)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, product_id)
+        DO UPDATE SET
+            quantity = cart_items.quantity + EXCLUDED.quantity,
+            added_at = CURRENT_TIMESTAMP
+        RETURNING user_id, product_id, quantity, added_at;
+    """
+    return await pool.fetchrow(query, user_id, product_id, quantity)
+
+
+async def set_cart_item_quantity(
+    pool: asyncpg.Pool, user_id: int, product_id: int, quantity: int
+):
+    """Устанавливает точное количество товара в корзине."""
+    query = """
+        UPDATE cart_items
+        SET quantity = $3,
+            added_at = CURRENT_TIMESTAMP
+        WHERE user_id = $1 AND product_id = $2
+        RETURNING user_id, product_id, quantity, added_at;
+    """
+    return await pool.fetchrow(query, user_id, product_id, quantity)
+
+
+async def get_cart_items(pool: asyncpg.Pool, user_id: int):
+    """Возвращает позиции корзины пользователя вместе с данными товара."""
+    query = """
+        SELECT
+            c.user_id,
+            c.product_id,
+            c.quantity,
+            c.added_at,
+            p.articul,
+            p.name,
+            p.price,
+            p.stock,
+            p.catalog_url,
+            p.pdf_url
+        FROM cart_items c
+        JOIN products p ON p.id = c.product_id
+        WHERE c.user_id = $1
+        ORDER BY c.added_at DESC;
+    """
+    records = await pool.fetch(query, user_id)
+
+    results = []
+    for r in records:
+        results.append(
+            {
+                "user_id": r["user_id"],
+                "product_id": r["product_id"],
+                "quantity": r["quantity"],
+                "added_at": r["added_at"],
+                "articul": r["articul"],
+                "name": r["name"],
+                "price": float(r["price"]) if r["price"] else 0.0,
+                "stock": r["stock"],
+                "catalog_url": r["catalog_url"],
+                "pdf_url": r["pdf_url"],
+            }
+        )
+    return results
+
+
+async def remove_cart_item(pool: asyncpg.Pool, user_id: int, product_id: int):
+    """Удаляет одну позицию из корзины пользователя."""
+    query = """
+        DELETE FROM cart_items
+        WHERE user_id = $1 AND product_id = $2;
+    """
+    result = await pool.execute(query, user_id, product_id)
+    return result
+
+
+async def clear_cart(pool: asyncpg.Pool, user_id: int):
+    """Очищает корзину пользователя целиком."""
+    query = """
+        DELETE FROM cart_items
+        WHERE user_id = $1;
+    """
+    result = await pool.execute(query, user_id)
+    return result

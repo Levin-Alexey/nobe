@@ -4,7 +4,7 @@ import re
 from openai import AsyncOpenAI
 from openai import BadRequestError
 from dotenv import load_dotenv
-from models import search_products_by_vector
+from models import add_or_update_cart_item, search_products_by_vector
 
 load_dotenv()
 
@@ -45,14 +45,14 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "create_excel_order",
-            "description": "Вызывай эту функцию, ТОЛЬКО когда клиент четко указал нужный товар и его количество, и просит сформировать заказ/смету/файл.",
+            "name": "add_to_cart",
+            "description": "Добавляет выбранные клиентом товары в корзину. Вызывай, когда клиент просит добавить/берет товар.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "items": {
                         "type": "array",
-                        "description": "Список товаров для добавления в заказ",
+                        "description": "Список товаров для добавления в корзину",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -66,6 +66,17 @@ TOOLS = [
                 "required": ["items"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_excel_order",
+            "description": "Сформировать итоговое коммерческое предложение в Excel по текущей корзине пользователя.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
     }
 ]
 
@@ -73,7 +84,9 @@ SYSTEM_PROMPT = """Ты — умный менеджер по продажам э
 Твоя задача — консультировать клиентов, подбирать им выключатели, розетки и рамки, и формировать заказы.
 ПРАВИЛА:
 1. Никогда не выдумывай цены, артикулы, ссылки или наличие. Всегда используй функцию search_catalog.
-2. Если клиент готов к заказу (например: "мне нужно 5 таких"), вызывай функцию create_excel_order.
+2. Если клиент выбрал позицию и количество (например: "добавь 3 шт"), вызывай функцию add_to_cart.
+3. Если клиент просит оформить/посчитать/прислать КП по тому, что уже добавлял ранее, вызывай функцию create_excel_order без параметров.
+4. Корзина накапливается между сообщениями пользователя: добавляй позиции по мере диалога.
 3. Общайся вежливо, по-деловому, но кратко.
 Сокращения которые может написать пользователь:
 ВЫКЛ - выключатель
@@ -182,7 +195,8 @@ async def process_user_message(
     if response_message.tool_calls:
         for tool_call in response_message.tool_calls:
             function_name = tool_call.function.name
-            function_args = json.loads(tool_call.function.arguments)
+            raw_args = tool_call.function.arguments or "{}"
+            function_args = json.loads(raw_args)
 
             if function_name == "search_catalog":
                 # 1. Получаем вектор из запроса
@@ -219,15 +233,55 @@ async def process_user_message(
                     "history": message_history,
                 }
 
+            elif function_name == "add_to_cart":
+                items_to_add = function_args.get("items", [])
+                added_items = 0
+
+                for item in items_to_add:
+                    product_id = int(item["id"])
+                    quantity = int(item["quantity"])
+                    if quantity <= 0:
+                        continue
+                    await add_or_update_cart_item(db_pool, user_id, product_id, quantity)
+                    added_items += 1
+
+                message_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": function_name,
+                    "content": json.dumps(
+                        {
+                            "status": "ok",
+                            "added_items": added_items,
+                        },
+                        ensure_ascii=False,
+                    )
+                })
+
+                try:
+                    second_response = await client.chat.completions.create(
+                        model=MODEL,
+                        messages=message_history
+                    )
+                except BadRequestError as e:
+                    print(f"Second chat 400 BadRequest: {e}")
+                    if getattr(e, "response", None) is not None:
+                        print(f"Second chat provider response: {e.response.text}")
+                    raise
+
+                final_msg = second_response.choices[0].message
+                message_history.append(assistant_message_to_dict(final_msg))
+                return {
+                    "type": "text",
+                    "content": format_clickable_links(final_msg.content or ""),
+                    "history": message_history,
+                }
+
             elif function_name == "create_excel_order":
-                # ИИ решил, что пора формировать заказ!
-                # Мы не отправляем это обратно в ИИ, мы отдаем команду нашему Telegram-боту
-                items_to_order = function_args["items"]
                 return {
                     "type": "excel_order",
-                    "items": items_to_order,
                     "history": message_history,
-                    "content": "Секунду, формирую файл сметы..."
+                    "content": "Секунду, формирую итоговое КП..."
                 }
 
     # Если ИИ ответил просто текстом (без вызова функций)

@@ -7,7 +7,7 @@ from aiogram.types import FSInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from models import get_db_pool
+from models import clear_cart, get_db_pool
 from ai_logic import process_user_message
 from excel_export import generate_order_excel
 
@@ -32,6 +32,7 @@ async def cmd_start(message: types.Message):
     """Приветственное сообщение"""
     # Очищаем историю при старте
     user_histories[message.from_user.id] = []
+    await clear_cart(db_pool, message.from_user.id)
     await message.answer(
         "👋 Привет! Я AI-менеджер по электроустановочным изделиям.\n\n"
         "Спроси меня про выключатели, розетки или рамки. Если нужно сформировать счет — просто скажи, какие позиции и сколько штук тебе нужно."
@@ -68,13 +69,16 @@ async def handle_user_message(message: types.Message):
             # Сначала пишем, что файл формируется
             processing_msg = await message.answer("Секунду, формирую файл сметы... 📊")
             
-            # Генерируем Excel
-            filepath = await generate_order_excel(db_pool, result["items"])
+            # Генерируем Excel на основе корзины пользователя в БД
+            filepath = await generate_order_excel(db_pool, user_id)
             
             if filepath:
                 # Отправляем файл пользователю
                 doc = FSInputFile(filepath)
                 await message.answer_document(document=doc, caption="Ваш заказ готов!")
+
+                # После успешной отправки очищаем корзину пользователя
+                await clear_cart(db_pool, user_id)
                 
                 # Удаляем временный файл с сервера, чтобы не копился мусор
                 try:
@@ -82,7 +86,9 @@ async def handle_user_message(message: types.Message):
                 except Exception as e:
                     print(f"Не удалось удалить файл {filepath}: {e}")
             else:
-                await message.answer("Не удалось сформировать смету (возможно, не найдены товары в БД).")
+                await message.answer(
+                    "Ваша корзина пуста. Добавьте товары, и я сформирую итоговое КП."
+                )
                 
             # Удаляем сообщение "Секунду, формирую..."
             await bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)

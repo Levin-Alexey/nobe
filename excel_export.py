@@ -3,24 +3,20 @@ import uuid
 from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
-from models import get_products_by_ids
+from models import get_cart_items
 
-async def generate_order_excel(db_pool, items_data: list) -> str:
+async def generate_order_excel(db_pool, user_id: int) -> str:
     """
-    Генерирует Excel-файл со сметой на основе данных от ИИ и актуальных цен из БД.
-    items_data: [{"id": 1, "quantity": 5}, {"id": 4, "quantity": 2}]
+    Генерирует Excel-файл со сметой на основе корзины пользователя из БД.
     Возвращает абсолютный путь к сгенерированному файлу.
     """
-    # 1. Извлекаем ID товаров
-    product_ids = [item["id"] for item in items_data]
-    
-    if not product_ids:
+    # 1. Получаем корзину пользователя из БД
+    cart_items = await get_cart_items(db_pool, user_id)
+
+    if not cart_items:
         return ""
 
-    # 2. Получаем точные данные из БД по этим ID
-    db_products = await get_products_by_ids(db_pool, product_ids)
-
-    # 3. Создаем Excel документ
+    # 2. Создаем Excel документ
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Смета"
@@ -42,27 +38,20 @@ async def generate_order_excel(db_pool, items_data: list) -> str:
         cell.alignment = center_align
         cell.border = thin_border
 
-    # 4. Заполняем таблицу данными
+    # 3. Заполняем таблицу данными
     total_sum = 0.0
     row_num = 2
 
-    for index, item in enumerate(items_data, start=1):
-        p_id = item["id"]
-        qty = item["quantity"]
-        
-        # Защита от галлюцинаций: если ИИ придумал ID, которого нет в базе, пропускаем
-        if p_id not in db_products:
-            continue
-            
-        prod = db_products[p_id]
-        price = float(prod["price"])
+    for index, item in enumerate(cart_items, start=1):
+        qty = int(item["quantity"])
+        price = float(item["price"])
         line_total = price * qty
         total_sum += line_total
 
         row_data = [
             index,
-            prod["articul"],
-            prod["name"],
+            item["articul"],
+            item["name"],
             price,
             qty,
             line_total
@@ -78,7 +67,7 @@ async def generate_order_excel(db_pool, items_data: list) -> str:
                 
         row_num += 1
 
-    # 5. Добавляем итоговую строку
+    # 4. Добавляем итоговую строку
     ws.append(["", "", "", "", "ИТОГО:", total_sum])
     
     total_label_cell = ws.cell(row=row_num, column=5)
@@ -89,7 +78,7 @@ async def generate_order_excel(db_pool, items_data: list) -> str:
     total_label_cell.alignment = center_align
     total_value_cell.alignment = center_align
 
-    # 6. Настраиваем ширину колонок, чтобы текст не обрезался
+    # 5. Настраиваем ширину колонок, чтобы текст не обрезался
     ws.column_dimensions['A'].width = 5   # №
     ws.column_dimensions['B'].width = 15  # Артикул
     ws.column_dimensions['C'].width = 65  # Наименование (самая широкая)
@@ -97,7 +86,7 @@ async def generate_order_excel(db_pool, items_data: list) -> str:
     ws.column_dimensions['E'].width = 10  # Кол-во
     ws.column_dimensions['F'].width = 18  # Сумма
 
-    # 7. Сохраняем во временный файл
+    # 6. Сохраняем во временный файл
     # Создаем директорию tmp, если ее вдруг нет
     tmp_dir = "/tmp/nobe_bot_orders"
     os.makedirs(tmp_dir, exist_ok=True)
