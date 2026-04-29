@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from openai import AsyncOpenAI
 from openai import BadRequestError
 from dotenv import load_dotenv
@@ -71,7 +72,7 @@ TOOLS = [
 SYSTEM_PROMPT = """Ты — умный менеджер по продажам электроустановочных изделий (бренд Arlight и аналоги). 
 Твоя задача — консультировать клиентов, подбирать им выключатели, розетки и рамки, и формировать заказы.
 ПРАВИЛА:
-1. Никогда не выдумывай цены, артикулы или наличие. Всегда используй функцию search_catalog.
+1. Никогда не выдумывай цены, артикулы, ссылки или наличие. Всегда используй функцию search_catalog.
 2. Если клиент готов к заказу (например: "мне нужно 5 таких"), вызывай функцию create_excel_order.
 3. Общайся вежливо, по-деловому, но кратко.
 Сокращения которые может написать пользователь:
@@ -82,6 +83,10 @@ SYSTEM_PROMPT = """Ты — умный менеджер по продажам э
 ТИП - тип (например: сенсорный, с подсветкой, с usb)
 Перекл - переключатель
 Звонк - звонок,механизм звонкового выклюателя
+ПРАВИЛА РАБОТЫ СО ССЫЛКАМИ:
+1. Если пользователь просит ссылку на товар или хочет "посмотреть на сайте", дай ему ссылку из поля 'catalog_url'.
+2. Если пользователь просит инструкцию, паспорт или PDF, дай ему ссылку из поля 'pdf_url'.
+3. Ссылки оформляй красиво, например: <a href="ССЫЛКА">Инструкция (PDF)</a>.
 """
 
 
@@ -98,6 +103,32 @@ def assistant_message_to_dict(message) -> dict:
         ]
 
     return payload
+
+
+def format_clickable_links(text: str) -> str:
+    """Преобразует обычные URL в HTML-ссылки для Telegram ParseMode.HTML."""
+    if not text:
+        return ""
+
+    # Не трогаем уже размеченные ссылки <a href="...">...</a>
+    anchor_pattern = re.compile(r"<a\s+href=\"[^\"]+\">.*?</a>", re.IGNORECASE | re.DOTALL)
+    url_pattern = re.compile(r"(?<![\"'=])(https?://[^\s<>)]+)")
+
+    parts = []
+    last_end = 0
+
+    for anchor_match in anchor_pattern.finditer(text):
+        prefix = text[last_end:anchor_match.start()]
+        prefix = url_pattern.sub(lambda m: f'<a href="{m.group(1)}">{m.group(1)}</a>', prefix)
+        parts.append(prefix)
+        parts.append(anchor_match.group(0))
+        last_end = anchor_match.end()
+
+    tail = text[last_end:]
+    tail = url_pattern.sub(lambda m: f'<a href="{m.group(1)}">{m.group(1)}</a>', tail)
+    parts.append(tail)
+
+    return "".join(parts)
 
 
 async def get_embedding(text: str) -> list:
@@ -184,7 +215,7 @@ async def process_user_message(
                 message_history.append(assistant_message_to_dict(final_msg))
                 return {
                     "type": "text",
-                    "content": final_msg.content or "",
+                    "content": format_clickable_links(final_msg.content or ""),
                     "history": message_history,
                 }
 
@@ -202,6 +233,6 @@ async def process_user_message(
     # Если ИИ ответил просто текстом (без вызова функций)
     return {
         "type": "text",
-        "content": response_message.content or "",
+        "content": format_clickable_links(response_message.content or ""),
         "history": message_history,
     }
